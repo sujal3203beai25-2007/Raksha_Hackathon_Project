@@ -1,0 +1,92 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --raksha-navy: #10243A;
+    --raksha-teal: #087F8C;
+    --raksha-cyan: #16B8C5;
+    --raksha-canvas: #F7FAFC;
+    --raksha-emergency: #C81E1E;
+    --font-display: 'Plus Jakarta Sans', 'Noto Sans Devanagari', sans-serif;
+    --font-body: 'DM Sans', 'Noto Sans Devanagari', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  html {
+    font-family: var(--font-body);
+    scroll-behavior: smooth;
+    overflow-x: clip;
+  }
+
+  body {
+    overflow-x: clip;
+    line-height: 1.5;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* WCAG 2.2 AA accessible focus rings */
+  *:focus-visible {
+    outline: 2px solid #087F8C;
+    outline-offset: 2px;
+  }
+
+  .dark *:focus-visible {
+    outline-color: #16B8C5;
+  }
+}
+
+/* Safe-area spacing helpers for mobile bottom navigation */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.pb-mobile-nav-clearance {
+  padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  .pb-mobile-nav-clearance {
+    padding-bottom: 0px;
+  }
+}
+
+/* Simplified elderly / low-literacy mode */
+.raksha-simplified {
+  font-size: 1.0625rem;
+}
+
+.raksha-simplified h1 {
+  font-size: clamp(1.625rem, 4vw, 2.5rem);
+  line-height: 1.25;
+}
+
+.raksha-simplified button,
+.raksha-simplified a[role="button"] {
+  min-height: 48px;
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.raksha-reduced-motion *,
+.raksha-reduced-motion *::before,
+.raksha-reduced-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}

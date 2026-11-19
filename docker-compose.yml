@@ -1,0 +1,33 @@
+services:
+  raksha-app:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.example
+    environment:
+      - NODE_ENV=production
+      - RAKSHA_ALLOW_LIVE_DISPATCH=false
+    depends_on:
+      - postgres
+      - redis
+
+  # Reference relational & spatial datastore for future dedicated PostgreSQL + PostGIS deployment
+  postgres:
+    image: postgis/postgis:16-3.4-alpine
+    environment:
+      POSTGRES_DB: raksha
+      POSTGRES_USER: raksha_app
+      POSTGRES_PASSWORD: change_me_local_only
+    ports:
+      - "5432:5432"
+    volumes:
+      - raksha_pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  raksha_pg_data:

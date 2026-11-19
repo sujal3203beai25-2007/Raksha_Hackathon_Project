@@ -1,0 +1,677 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Reusable Hardened Primitives ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isVerifiedUser() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'ansh32ika94@gmail.com'
+      );
+    }
+
+    function isLiveStaff() {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/role_grants/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/role_grants/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function isDemoTenant(tenantId) {
+      return tenantId == 'demo-maharashtra';
+    }
+
+    function isValidTenant(tenantId) {
+      return tenantId in ['mh-live', 'demo-maharashtra'];
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidUserPublic(data, uid) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'tenantId', 'preferredLanguage', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'tenantId', 'preferredLanguage', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == uid &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.role in ['patient', 'caregiver', 'frontline_worker', 'ambulance_driver', 'dispatcher', 'hospital_coordinator', 'clinician', 'facility_admin', 'org_admin', 'platform_admin', 'auditor'] &&
+        isValidTenant(data.tenantId) &&
+        data.preferredLanguage in ['en', 'hi', 'mr'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data, uid) {
+      return data.keys().hasAll(['uid', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'village', 'taluka', 'district', 'bloodGroup', 'allergies', 'medications', 'emergencyContactName', 'emergencyContactPhone', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == uid &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+        (!('village' in data) || (data.village is string && data.village.size() <= 120)) &&
+        (!('taluka' in data) || (data.taluka is string && data.taluka.size() <= 120)) &&
+        (!('district' in data) || (data.district is string && data.district.size() <= 120)) &&
+        (!('bloodGroup' in data) || (data.bloodGroup is string && data.bloodGroup.size() <= 12)) &&
+        (!('allergies' in data) || (data.allergies is string && data.allergies.size() <= 500)) &&
+        (!('medications' in data) || (data.medications is string && data.medications.size() <= 500)) &&
+        (!('emergencyContactName' in data) || (data.emergencyContactName is string && data.emergencyContactName.size() <= 120)) &&
+        (!('emergencyContactPhone' in data) || (data.emergencyContactPhone is string && data.emergencyContactPhone.size() <= 30)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidConsent(data, uid, consentId) {
+      return data.keys().hasAll(['consentId', 'uid', 'purpose', 'granted', 'version', 'updatedAt']) &&
+        data.keys().hasOnly(['consentId', 'uid', 'purpose', 'granted', 'version', 'updatedAt']) &&
+        isValidId(data.consentId) && data.consentId == consentId &&
+        isValidId(data.uid) && data.uid == uid &&
+        data.purpose in ['triage_sharing', 'referral_sharing', 'emergency_gps', 'ai_summarization', 'family_access'] &&
+        data.granted is bool &&
+        data.version is string && data.version.size() >= 1 && data.version.size() <= 32 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDependent(data, uid, dependentId) {
+      return data.keys().hasAll(['dependentId', 'guardianUid', 'name', 'relationship', 'ageYears', 'guardianConfirmed', 'updatedAt']) &&
+        data.keys().hasOnly(['dependentId', 'guardianUid', 'name', 'relationship', 'ageYears', 'guardianConfirmed', 'updatedAt']) &&
+        isValidId(data.dependentId) && data.dependentId == dependentId &&
+        isValidId(data.guardianUid) && data.guardianUid == uid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.relationship is string && data.relationship.size() >= 1 && data.relationship.size() <= 60 &&
+        data.ageYears is number && data.ageYears >= 0 && data.ageYears <= 120 &&
+        data.guardianConfirmed is bool &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidHealthRecord(data, uid, recordId) {
+      return data.keys().hasAll(['recordId', 'uid', 'title', 'category', 'summary', 'recordedDate', 'createdAt']) &&
+        data.keys().hasOnly(['recordId', 'uid', 'title', 'category', 'summary', 'facilityName', 'recordedDate', 'createdAt']) &&
+        isValidId(data.recordId) && data.recordId == recordId &&
+        isValidId(data.uid) && data.uid == uid &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 180 &&
+        data.category in ['prescription', 'lab_report', 'discharge_summary', 'immunization', 'self_note'] &&
+        data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 1500 &&
+        (!('facilityName' in data) || (data.facilityName is string && data.facilityName.size() <= 180)) &&
+        data.recordedDate is string && data.recordedDate.size() >= 4 && data.recordedDate.size() <= 32 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidDsrRequest(data, uid, requestId) {
+      return data.keys().hasAll(['requestId', 'uid', 'type', 'status', 'createdAt']) &&
+        data.keys().hasOnly(['requestId', 'uid', 'type', 'status', 'createdAt']) &&
+        isValidId(data.requestId) && data.requestId == requestId &&
+        isValidId(data.uid) && data.uid == uid &&
+        data.type in ['export', 'deletion'] &&
+        data.status in ['submitted', 'completed'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAiSession(data, uid, sessionId) {
+      return data.keys().hasAll(['sessionId', 'uid', 'title', 'modelMode', 'groundingMode', 'persona', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['sessionId', 'uid', 'title', 'modelMode', 'groundingMode', 'persona', 'createdAt', 'updatedAt']) &&
+        isValidId(data.sessionId) && data.sessionId == sessionId &&
+        isValidId(data.uid) && data.uid == uid &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.modelMode in ['balanced', 'deep', 'fast'] &&
+        data.groundingMode in ['none', 'search', 'maps'] &&
+        data.persona in ['navigator', 'asha_helper', 'emergency_prep'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAiMessage(data, uid, sessionId, messageId) {
+      return data.keys().hasAll(['messageId', 'sessionId', 'uid', 'role', 'text', 'createdAt']) &&
+        data.keys().hasOnly(['messageId', 'sessionId', 'uid', 'role', 'text', 'model', 'thinkingLevel', 'groundingMode', 'citations', 'createdAt']) &&
+        isValidId(data.messageId) && data.messageId == messageId &&
+        isValidId(data.sessionId) && data.sessionId == sessionId &&
+        isValidId(data.uid) && data.uid == uid &&
+        data.role in ['user', 'assistant'] &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 8000 &&
+        (!('model' in data) || (data.model is string && data.model.size() <= 64)) &&
+        (!('thinkingLevel' in data) || (data.thinkingLevel is string && data.thinkingLevel.size() <= 32)) &&
+        (!('groundingMode' in data) || data.groundingMode in ['none', 'search', 'maps']) &&
+        (!('citations' in data) || (data.citations is list && data.citations.size() <= 20 && (data.citations.size() == 0 || data.citations[0] is string))) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidFacility(data, facilityId) {
+      return data.keys().hasAll(['facilityId', 'tenantId', 'name', 'type', 'category', 'district', 'taluka', 'lat', 'lng', 'hours24x7', 'emergencyCapable', 'wheelchairAccessible', 'data_source', 'source_timestamp', 'verification_status', 'freshness_ttl', 'updatedAt']) &&
+        data.keys().hasOnly(['facilityId', 'tenantId', 'name', 'nameHi', 'nameMr', 'type', 'category', 'district', 'taluka', 'address', 'lat', 'lng', 'phone', 'hours24x7', 'emergencyCapable', 'wheelchairAccessible', 'specialties', 'diagnostics', 'data_source', 'source_timestamp', 'verification_status', 'freshness_ttl', 'last_updated_by', 'icuBedsAvailable', 'generalBedsAvailable', 'oxygenAvailable', 'updatedAt']) &&
+        isValidId(data.facilityId) && data.facilityId == facilityId &&
+        isValidTenant(data.tenantId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        (!('nameHi' in data) || (data.nameHi is string && data.nameHi.size() <= 200)) &&
+        (!('nameMr' in data) || (data.nameMr is string && data.nameMr.size() <= 200)) &&
+        data.type in ['PHC', 'RH', 'SDH', 'DH', 'MC', 'PRIVATE'] &&
+        data.category in ['public', 'private', 'trust'] &&
+        data.district is string && data.district.size() >= 1 && data.district.size() <= 100 &&
+        data.taluka is string && data.taluka.size() >= 1 && data.taluka.size() <= 100 &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 300)) &&
+        data.lat is number && data.lng is number &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        data.hours24x7 is bool &&
+        data.emergencyCapable is bool &&
+        data.wheelchairAccessible is bool &&
+        (!('specialties' in data) || (data.specialties is list && data.specialties.size() <= 20 && (data.specialties.size() == 0 || data.specialties[0] is string))) &&
+        (!('diagnostics' in data) || (data.diagnostics is list && data.diagnostics.size() <= 20 && (data.diagnostics.size() == 0 || data.diagnostics[0] is string))) &&
+        data.data_source is string && data.data_source.size() >= 1 && data.data_source.size() <= 160 &&
+        data.source_timestamp is string && data.source_timestamp.size() >= 1 && data.source_timestamp.size() <= 64 &&
+        data.verification_status in ['verified_live', 'cached', 'unverified', 'demo_fixture'] &&
+        data.freshness_ttl is number && data.freshness_ttl >= 0 &&
+        (!('last_updated_by' in data) || (data.last_updated_by is string && data.last_updated_by.size() <= 128)) &&
+        (!('icuBedsAvailable' in data) || data.icuBedsAvailable is number) &&
+        (!('generalBedsAvailable' in data) || data.generalBedsAvailable is number) &&
+        (!('oxygenAvailable' in data) || data.oxygenAvailable in ['verified_available', 'limited', 'unavailable', 'unknown']) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTriageLog(data, triageId) {
+      return data.keys().hasAll(['triageId', 'uid', 'tenantId', 'ruleVersion', 'urgency', 'rationale', 'humanReviewRequired', 'createdAt']) &&
+        data.keys().hasOnly(['triageId', 'uid', 'tenantId', 'ruleVersion', 'urgency', 'redFlags', 'symptoms', 'rationale', 'humanReviewRequired', 'createdAt']) &&
+        isValidId(data.triageId) && data.triageId == triageId &&
+        isValidId(data.uid) && data.uid == request.auth.uid &&
+        isValidTenant(data.tenantId) &&
+        data.ruleVersion is string && data.ruleVersion.size() >= 1 && data.ruleVersion.size() <= 40 &&
+        data.urgency in ['emergency', 'urgent', 'routine', 'human_review'] &&
+        (!('redFlags' in data) || (data.redFlags is list && data.redFlags.size() <= 20 && (data.redFlags.size() == 0 || data.redFlags[0] is string))) &&
+        (!('symptoms' in data) || (data.symptoms is list && data.symptoms.size() <= 30 && (data.symptoms.size() == 0 || data.symptoms[0] is string))) &&
+        data.rationale is string && data.rationale.size() >= 1 && data.rationale.size() <= 1000 &&
+        data.humanReviewRequired is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidReferral(data, referralId) {
+      return data.keys().hasAll(['referralId', 'tenantId', 'patientUid', 'patientDisplayName', 'createdByUid', 'originFacilityId', 'originFacilityName', 'destinationFacilityId', 'destinationFacilityName', 'urgency', 'status', 'version', 'idempotencyKey', 'reason', 'clinicalSummary', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['referralId', 'tenantId', 'patientUid', 'patientDisplayName', 'createdByUid', 'originFacilityId', 'originFacilityName', 'destinationFacilityId', 'destinationFacilityName', 'urgency', 'status', 'version', 'idempotencyKey', 'consentId', 'reason', 'clinicalSummary', 'aiSummaryPendingReview', 'aiSummaryText', 'qrToken', 'qrExpiresAt', 'escalationDeadline', 'rejectionOrCancelReason', 'assignedClinicianUid', 'createdAt', 'updatedAt']) &&
+        isValidId(data.referralId) && data.referralId == referralId &&
+        isValidTenant(data.tenantId) &&
+        isValidId(data.patientUid) &&
+        data.patientDisplayName is string && data.patientDisplayName.size() >= 1 && data.patientDisplayName.size() <= 120 &&
+        isValidId(data.createdByUid) &&
+        data.originFacilityId is string && data.originFacilityId.size() >= 1 && data.originFacilityId.size() <= 128 &&
+        data.originFacilityName is string && data.originFacilityName.size() >= 1 && data.originFacilityName.size() <= 200 &&
+        data.destinationFacilityId is string && data.destinationFacilityId.size() >= 1 && data.destinationFacilityId.size() <= 128 &&
+        data.destinationFacilityName is string && data.destinationFacilityName.size() >= 1 && data.destinationFacilityName.size() <= 200 &&
+        data.urgency in ['emergency', 'urgent', 'routine'] &&
+        data.status in ['draft', 'submitted', 'under_review', 'accepted', 'rejected', 'transfer_arranged', 'in_transit', 'arrived', 'handed_over', 'completed', 'cancelled', 'expired'] &&
+        data.version is number && data.version >= 1 &&
+        data.idempotencyKey is string && data.idempotencyKey.size() >= 4 && data.idempotencyKey.size() <= 128 &&
+        (!('consentId' in data) || (data.consentId is string && data.consentId.size() <= 128)) &&
+        data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 500 &&
+        data.clinicalSummary is string && data.clinicalSummary.size() >= 2 && data.clinicalSummary.size() <= 2000 &&
+        (!('aiSummaryPendingReview' in data) || data.aiSummaryPendingReview is bool) &&
+        (!('aiSummaryText' in data) || (data.aiSummaryText is string && data.aiSummaryText.size() <= 2000)) &&
+        (!('qrToken' in data) || (data.qrToken is string && data.qrToken.size() <= 128)) &&
+        (!('qrExpiresAt' in data) || (data.qrExpiresAt is string && data.qrExpiresAt.size() <= 64)) &&
+        (!('escalationDeadline' in data) || (data.escalationDeadline is string && data.escalationDeadline.size() <= 64)) &&
+        (!('rejectionOrCancelReason' in data) || (data.rejectionOrCancelReason is string && data.rejectionOrCancelReason.size() <= 500)) &&
+        (!('assignedClinicianUid' in data) || (data.assignedClinicianUid is string && data.assignedClinicianUid.size() <= 128)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidReferralEvent(data, referralId, eventId) {
+      return data.keys().hasAll(['eventId', 'referralId', 'fromStatus', 'toStatus', 'actorUid', 'actorRole', 'createdAt']) &&
+        data.keys().hasOnly(['eventId', 'referralId', 'fromStatus', 'toStatus', 'actorUid', 'actorRole', 'note', 'createdAt']) &&
+        isValidId(data.eventId) && data.eventId == eventId &&
+        isValidId(data.referralId) && data.referralId == referralId &&
+        data.fromStatus is string && data.fromStatus.size() >= 1 && data.fromStatus.size() <= 40 &&
+        data.toStatus is string && data.toStatus.size() >= 1 && data.toStatus.size() <= 40 &&
+        isValidId(data.actorUid) && data.actorUid == request.auth.uid &&
+        data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 60 &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidEmergency(data, emergencyId) {
+      return data.keys().hasAll(['emergencyId', 'tenantId', 'patientUid', 'patientDisplayName', 'callbackNumber', 'villageOrLandmark', 'status', 'version', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['emergencyId', 'tenantId', 'patientUid', 'patientDisplayName', 'callbackNumber', 'locationMode', 'villageOrLandmark', 'lat', 'lng', 'symptoms', 'status', 'version', 'assignedAmbulanceId', 'assignedDriverUid', 'destinationFacilityId', 'destinationFacilityName', 'etaMinutes', 'gpsConsentGranted', 'driverLat', 'driverLng', 'driverGpsUpdatedAt', 'cancelOrFailReason', 'createdAt', 'updatedAt']) &&
+        isValidId(data.emergencyId) && data.emergencyId == emergencyId &&
+        isValidTenant(data.tenantId) &&
+        isValidId(data.patientUid) &&
+        data.patientDisplayName is string && data.patientDisplayName.size() >= 1 && data.patientDisplayName.size() <= 120 &&
+        data.callbackNumber is string && data.callbackNumber.size() >= 6 && data.callbackNumber.size() <= 30 &&
+        (!('locationMode' in data) || data.locationMode in ['gps', 'manual']) &&
+        data.villageOrLandmark is string && data.villageOrLandmark.size() >= 2 && data.villageOrLandmark.size() <= 200 &&
+        (!('lat' in data) || data.lat is number) &&
+        (!('lng' in data) || data.lng is number) &&
+        (!('symptoms' in data) || (data.symptoms is string && data.symptoms.size() <= 600)) &&
+        data.status in ['pending_validation', 'acknowledged', 'dispatch_proposed', 'driver_accepted', 'driver_rejected', 'en_route_to_patient', 'arrived_at_pickup', 'patient_onboard', 'en_route_to_hospital', 'hospital_acknowledged', 'arrived_at_hospital', 'handed_over', 'closed', 'cancelled', 'no_ambulance_available'] &&
+        data.version is number && data.version >= 1 &&
+        (!('assignedAmbulanceId' in data) || (data.assignedAmbulanceId is string && data.assignedAmbulanceId.size() <= 128)) &&
+        (!('assignedDriverUid' in data) || (data.assignedDriverUid is string && data.assignedDriverUid.size() <= 128)) &&
+        (!('destinationFacilityId' in data) || (data.destinationFacilityId is string && data.destinationFacilityId.size() <= 128)) &&
+        (!('destinationFacilityName' in data) || (data.destinationFacilityName is string && data.destinationFacilityName.size() <= 200)) &&
+        (!('etaMinutes' in data) || data.etaMinutes is number) &&
+        (!('gpsConsentGranted' in data) || data.gpsConsentGranted is bool) &&
+        (!('driverLat' in data) || data.driverLat is number) &&
+        (!('driverLng' in data) || data.driverLng is number) &&
+        (!('driverGpsUpdatedAt' in data) || (data.driverGpsUpdatedAt is string && data.driverGpsUpdatedAt.size() <= 64)) &&
+        (!('cancelOrFailReason' in data) || (data.cancelOrFailReason is string && data.cancelOrFailReason.size() <= 500)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidEmergencyEvent(data, emergencyId, eventId) {
+      return data.keys().hasAll(['eventId', 'emergencyId', 'fromStatus', 'toStatus', 'actorUid', 'actorRole', 'createdAt']) &&
+        data.keys().hasOnly(['eventId', 'emergencyId', 'fromStatus', 'toStatus', 'actorUid', 'actorRole', 'note', 'createdAt']) &&
+        isValidId(data.eventId) && data.eventId == eventId &&
+        isValidId(data.emergencyId) && data.emergencyId == emergencyId &&
+        data.fromStatus is string && data.fromStatus.size() >= 1 && data.fromStatus.size() <= 40 &&
+        data.toStatus is string && data.toStatus.size() >= 1 && data.toStatus.size() <= 40 &&
+        isValidId(data.actorUid) && data.actorUid == request.auth.uid &&
+        data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 60 &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAmbulance(data, ambulanceId) {
+      return data.keys().hasAll(['ambulanceId', 'tenantId', 'orgName', 'vehicleNumber', 'capability', 'status', 'baseDistrict', 'isDemo', 'updatedAt']) &&
+        data.keys().hasOnly(['ambulanceId', 'tenantId', 'orgName', 'vehicleNumber', 'capability', 'status', 'driverUid', 'driverName', 'baseDistrict', 'lat', 'lng', 'gpsFreshnessAt', 'gpsConsentActive', 'isDemo', 'updatedAt']) &&
+        isValidId(data.ambulanceId) && data.ambulanceId == ambulanceId &&
+        isValidTenant(data.tenantId) &&
+        data.orgName is string && data.orgName.size() >= 1 && data.orgName.size() <= 160 &&
+        data.vehicleNumber is string && data.vehicleNumber.size() >= 2 && data.vehicleNumber.size() <= 40 &&
+        data.capability in ['BLS', 'ALS', 'NEONATAL', 'FIRST_RESPONDER'] &&
+        data.status in ['available', 'proposed', 'assigned', 'offline', 'maintenance'] &&
+        (!('driverUid' in data) || (data.driverUid is string && data.driverUid.size() <= 128)) &&
+        (!('driverName' in data) || (data.driverName is string && data.driverName.size() <= 120)) &&
+        data.baseDistrict is string && data.baseDistrict.size() >= 1 && data.baseDistrict.size() <= 100 &&
+        (!('lat' in data) || data.lat is number) &&
+        (!('lng' in data) || data.lng is number) &&
+        (!('gpsFreshnessAt' in data) || (data.gpsFreshnessAt is string && data.gpsFreshnessAt.size() <= 64)) &&
+        (!('gpsConsentActive' in data) || data.gpsConsentActive is bool) &&
+        data.isDemo is bool &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidFollowUp(data, followUpId) {
+      return data.keys().hasAll(['followUpId', 'tenantId', 'patientUid', 'title', 'dueDate', 'status', 'updatedAt']) &&
+        data.keys().hasOnly(['followUpId', 'tenantId', 'patientUid', 'workerUid', 'referralId', 'title', 'dueDate', 'status', 'notes', 'updatedAt']) &&
+        isValidId(data.followUpId) && data.followUpId == followUpId &&
+        isValidTenant(data.tenantId) &&
+        isValidId(data.patientUid) &&
+        (!('workerUid' in data) || (data.workerUid is string && data.workerUid.size() <= 128)) &&
+        (!('referralId' in data) || (data.referralId is string && data.referralId.size() <= 128)) &&
+        data.title is string && data.title.size() >= 2 && data.title.size() <= 180 &&
+        data.dueDate is string && data.dueDate.size() >= 4 && data.dueDate.size() <= 32 &&
+        data.status in ['pending', 'completed', 'missed'] &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data, auditId) {
+      return data.keys().hasAll(['auditId', 'tenantId', 'actorUid', 'actorRole', 'action', 'resourceType', 'resourceId', 'createdAt']) &&
+        data.keys().hasOnly(['auditId', 'tenantId', 'actorUid', 'actorRole', 'action', 'resourceType', 'resourceId', 'reason', 'createdAt']) &&
+        isValidId(data.auditId) && data.auditId == auditId &&
+        isValidTenant(data.tenantId) &&
+        isValidId(data.actorUid) && data.actorUid == request.auth.uid &&
+        data.actorRole is string && data.actorRole.size() >= 1 && data.actorRole.size() <= 60 &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 120 &&
+        data.resourceType is string && data.resourceType.size() >= 1 && data.resourceType.size() <= 80 &&
+        data.resourceId is string && data.resourceId.size() >= 1 && data.resourceId.size() <= 128 &&
+        (!('reason' in data) || (data.reason is string && data.reason.size() <= 500)) &&
+        data.createdAt is timestamp;
+    }
+
+    // --- Connection Probe (read-only) ---
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    // --- Admin & Role Grant Governance (Read-only for users, Admin-managed) ---
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow write: if false;
+    }
+
+    match /role_grants/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(uid) && isAdmin() && incoming().uid == uid && incoming().updatedAt == request.time;
+      allow delete: if isValidId(uid) && isAdmin();
+    }
+
+    // --- Users (Public metadata vs Isolated PII Subcollections) ---
+    match /users/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin() || isLiveStaff());
+      allow list: if isAdmin();
+      allow create: if isValidId(uid) && isOwner(uid) &&
+        isValidUserPublic(incoming(), uid) &&
+        incoming().role == 'patient' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(uid) && isValidUserPublic(incoming(), uid) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isOwner(uid) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'tenantId', 'preferredLanguage', 'updatedAt']) &&
+            incoming().role == existing().role)
+        );
+      allow delete: if false;
+
+      match /private/{docId} {
+        allow get: if isValidId(uid) && isValidId(docId) && (isOwner(uid) || isAdmin());
+        allow create: if isValidId(uid) && isValidId(docId) && isOwner(uid) &&
+          isValidUserPrivate(incoming(), uid) && incoming().updatedAt == request.time;
+        allow update: if isValidId(uid) && isValidId(docId) && isOwner(uid) &&
+          isValidUserPrivate(incoming(), uid) && incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'village', 'taluka', 'district', 'bloodGroup', 'allergies', 'medications', 'emergencyContactName', 'emergencyContactPhone', 'updatedAt']);
+        allow delete: if isValidId(uid) && isOwner(uid);
+      }
+
+      match /consents/{consentId} {
+        allow get: if isValidId(uid) && isValidId(consentId) && (isOwner(uid) || isAdmin());
+        allow list: if isValidId(uid) && (isOwner(uid) || isAdmin());
+        allow create: if isValidId(uid) && isValidId(consentId) && isOwner(uid) &&
+          isValidConsent(incoming(), uid, consentId) && incoming().updatedAt == request.time;
+        allow update: if isValidId(uid) && isValidId(consentId) && isOwner(uid) &&
+          isValidConsent(incoming(), uid, consentId) && incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['granted', 'version', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /dependents/{dependentId} {
+        allow get: if isValidId(uid) && isValidId(dependentId) && (isOwner(uid) || isAdmin());
+        allow list: if isValidId(uid) && (isOwner(uid) || isAdmin());
+        allow create: if isValidId(uid) && isValidId(dependentId) && isOwner(uid) &&
+          isValidDependent(incoming(), uid, dependentId) && incoming().updatedAt == request.time;
+        allow update: if isValidId(uid) && isValidId(dependentId) && isOwner(uid) &&
+          isValidDependent(incoming(), uid, dependentId) && incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'relationship', 'ageYears', 'guardianConfirmed', 'updatedAt']);
+        allow delete: if isValidId(uid) && isValidId(dependentId) && isOwner(uid);
+      }
+
+      match /records/{recordId} {
+        allow get: if isValidId(uid) && isValidId(recordId) && (isOwner(uid) || isAdmin());
+        allow list: if isValidId(uid) && (isOwner(uid) || isAdmin());
+        allow create: if isValidId(uid) && isValidId(recordId) && isOwner(uid) &&
+          isValidHealthRecord(incoming(), uid, recordId) && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(uid) && isValidId(recordId) && isOwner(uid);
+      }
+
+      match /dsr_requests/{requestId} {
+        allow get: if isValidId(uid) && isValidId(requestId) && (isOwner(uid) || isAdmin());
+        allow list: if isValidId(uid) && (isOwner(uid) || isAdmin());
+        allow create: if isValidId(uid) && isValidId(requestId) && isOwner(uid) &&
+          isValidDsrRequest(incoming(), uid, requestId) &&
+          incoming().status == 'submitted' &&
+          incoming().createdAt == request.time;
+        allow update: if isValidId(uid) && isValidId(requestId) && isAdmin() &&
+          isValidDsrRequest(incoming(), uid, requestId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+        allow delete: if false;
+      }
+
+      match /ai_sessions/{sessionId} {
+        allow get: if isValidId(uid) && isValidId(sessionId) && isOwner(uid);
+        allow list: if isValidId(uid) && isOwner(uid);
+        allow create: if isValidId(uid) && isValidId(sessionId) && isOwner(uid) &&
+          isValidAiSession(incoming(), uid, sessionId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(uid) && isValidId(sessionId) && isOwner(uid) &&
+          isValidAiSession(incoming(), uid, sessionId) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'modelMode', 'groundingMode', 'persona', 'updatedAt']);
+        allow delete: if isValidId(uid) && isValidId(sessionId) && isOwner(uid);
+
+        match /messages/{messageId} {
+          allow get: if isValidId(uid) && isValidId(sessionId) && isValidId(messageId) && isOwner(uid) &&
+            exists(/databases/$(database)/documents/users/$(uid)/ai_sessions/$(sessionId));
+          allow list: if isValidId(uid) && isValidId(sessionId) && isOwner(uid) &&
+            exists(/databases/$(database)/documents/users/$(uid)/ai_sessions/$(sessionId)) &&
+            resource.data.uid == uid;
+          allow create: if isValidId(uid) && isValidId(sessionId) && isValidId(messageId) && isOwner(uid) &&
+            exists(/databases/$(database)/documents/users/$(uid)/ai_sessions/$(sessionId)) &&
+            isValidAiMessage(incoming(), uid, sessionId, messageId) &&
+            incoming().createdAt == request.time;
+          allow update: if false;
+          allow delete: if isValidId(uid) && isValidId(sessionId) && isValidId(messageId) && isOwner(uid);
+        }
+      }
+    }
+
+    // --- Facilities (Public discovery without login; verified staff/admin/demo writes) ---
+    match /facilities/{facilityId} {
+      allow get: if isValidId(facilityId);
+      allow list: if resource.data.tenantId in ['mh-live', 'demo-maharashtra'];
+      allow create: if isValidId(facilityId) &&
+        isValidFacility(incoming(), facilityId) &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isVerifiedUser() && isDemoTenant(incoming().tenantId))
+        );
+      allow update: if isValidId(facilityId) &&
+        isValidFacility(incoming(), facilityId) &&
+        incoming().tenantId == existing().tenantId &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isLiveStaff() && existing().tenantId == 'mh-live' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['icuBedsAvailable', 'generalBedsAvailable', 'oxygenAvailable', 'source_timestamp', 'verification_status', 'last_updated_by', 'updatedAt'])) ||
+          (isVerifiedUser() && isDemoTenant(existing().tenantId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['icuBedsAvailable', 'generalBedsAvailable', 'oxygenAvailable', 'source_timestamp', 'verification_status', 'last_updated_by', 'updatedAt']))
+        );
+      allow delete: if isValidId(facilityId) && isAdmin();
+    }
+
+    // --- Triage Logs (Owner-isolated) ---
+    match /triage_logs/{triageId} {
+      allow get: if isValidId(triageId) && isVerifiedUser() && (existing().uid == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isValidId(triageId) && isVerifiedUser() &&
+        isValidTriageLog(incoming(), triageId) &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // --- Referrals & Immutable Event History ---
+    match /referrals/{referralId} {
+      allow get: if isValidId(referralId) && isVerifiedUser() && (
+        existing().patientUid == request.auth.uid ||
+        existing().createdByUid == request.auth.uid ||
+        isAdmin() ||
+        isLiveStaff() ||
+        isDemoTenant(existing().tenantId)
+      );
+      allow list: if isVerifiedUser() && (
+        resource.data.patientUid == request.auth.uid ||
+        resource.data.createdByUid == request.auth.uid ||
+        isAdmin() ||
+        isLiveStaff() ||
+        resource.data.tenantId == 'demo-maharashtra'
+      );
+      allow create: if isValidId(referralId) && isVerifiedUser() &&
+        isValidReferral(incoming(), referralId) &&
+        incoming().version == 1 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().patientUid == request.auth.uid || incoming().createdByUid == request.auth.uid) &&
+        (isDemoTenant(incoming().tenantId) || incoming().status in ['draft', 'submitted']);
+      allow update: if isValidId(referralId) && isVerifiedUser() &&
+        isValidReferral(incoming(), referralId) &&
+        incoming().tenantId == existing().tenantId &&
+        incoming().patientUid == existing().patientUid &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (!(existing().status in ['completed', 'cancelled', 'rejected', 'expired']) && (
+            // Action: Patient/Creator Submit, Cancel, or AI Summary attach
+            ((existing().patientUid == request.auth.uid || existing().createdByUid == request.auth.uid) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'version', 'rejectionOrCancelReason', 'qrToken', 'qrExpiresAt', 'aiSummaryPendingReview', 'aiSummaryText', 'updatedAt']) &&
+              incoming().version == existing().version + 1) ||
+            // Action: Staff / Demo Coordinator FSM transition
+            ((isLiveStaff() || isDemoTenant(existing().tenantId)) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'version', 'assignedClinicianUid', 'rejectionOrCancelReason', 'aiSummaryPendingReview', 'aiSummaryText', 'qrToken', 'qrExpiresAt', 'updatedAt']) &&
+              incoming().version == existing().version + 1)
+          ))
+        );
+      allow delete: if false;
+
+      match /events/{eventId} {
+        allow get: if isValidId(referralId) && isValidId(eventId) && isVerifiedUser() &&
+          exists(/databases/$(database)/documents/referrals/$(referralId)) && (
+            get(/databases/$(database)/documents/referrals/$(referralId)).data.patientUid == request.auth.uid ||
+            get(/databases/$(database)/documents/referrals/$(referralId)).data.createdByUid == request.auth.uid ||
+            isAdmin() ||
+            isLiveStaff() ||
+            isDemoTenant(get(/databases/$(database)/documents/referrals/$(referralId)).data.tenantId)
+          );
+        allow list: if isVerifiedUser() &&
+          exists(/databases/$(database)/documents/referrals/$(referralId)) &&
+          resource.data.referralId == referralId;
+        allow create: if isValidId(referralId) && isValidId(eventId) && isVerifiedUser() &&
+          isValidReferralEvent(incoming(), referralId, eventId) &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/referrals/$(referralId));
+        allow update, delete: if false;
+      }
+    }
+
+    // --- Emergency Operations & Immutable Event History ---
+    match /emergencies/{emergencyId} {
+      allow get: if isValidId(emergencyId) && isVerifiedUser() && (
+        existing().patientUid == request.auth.uid ||
+        isAdmin() ||
+        isLiveStaff() ||
+        isDemoTenant(existing().tenantId)
+      );
+      allow list: if isVerifiedUser() && (
+        resource.data.patientUid == request.auth.uid ||
+        isAdmin() ||
+        isLiveStaff() ||
+        resource.data.tenantId == 'demo-maharashtra'
+      );
+      allow create: if isValidId(emergencyId) && isVerifiedUser() &&
+        isValidEmergency(incoming(), emergencyId) &&
+        incoming().patientUid == request.auth.uid &&
+        incoming().status == 'pending_validation' &&
+        incoming().version == 1 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(emergencyId) && isVerifiedUser() &&
+        isValidEmergency(incoming(), emergencyId) &&
+        incoming().tenantId == existing().tenantId &&
+        incoming().patientUid == existing().patientUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (!(existing().status in ['closed', 'cancelled']) && (
+            // Action: Patient cancel
+            (existing().patientUid == request.auth.uid &&
+              incoming().status == 'cancelled' &&
+              incoming().version == existing().version + 1 &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'version', 'cancelOrFailReason', 'updatedAt'])) ||
+            // Action: Demo sandbox or verified live dispatch progression
+            ((isDemoTenant(existing().tenantId) || isLiveStaff()) &&
+              incoming().version == existing().version + 1 &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'version', 'assignedAmbulanceId', 'assignedDriverUid', 'destinationFacilityId', 'destinationFacilityName', 'etaMinutes', 'gpsConsentGranted', 'driverLat', 'driverLng', 'driverGpsUpdatedAt', 'cancelOrFailReason', 'updatedAt']))
+          ))
+        );
+      allow delete: if false;
+
+      match /events/{eventId} {
+        allow get: if isValidId(emergencyId) && isValidId(eventId) && isVerifiedUser() &&
+          exists(/databases/$(database)/documents/emergencies/$(emergencyId));
+        allow list: if isVerifiedUser() &&
+          exists(/databases/$(database)/documents/emergencies/$(emergencyId)) &&
+          resource.data.emergencyId == emergencyId;
+        allow create: if isValidId(emergencyId) && isValidId(eventId) && isVerifiedUser() &&
+          isValidEmergencyEvent(incoming(), emergencyId, eventId) &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/emergencies/$(emergencyId));
+        allow update, delete: if false;
+      }
+    }
+
+    // --- Ambulances ---
+    match /ambulances/{ambulanceId} {
+      allow get: if isValidId(ambulanceId) && isVerifiedUser();
+      allow list: if isVerifiedUser() && resource.data.tenantId in ['mh-live', 'demo-maharashtra'];
+      allow create: if isValidId(ambulanceId) && isVerifiedUser() &&
+        isValidAmbulance(incoming(), ambulanceId) &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isDemoTenant(incoming().tenantId) && incoming().isDemo == true)
+        );
+      allow update: if isValidId(ambulanceId) && isVerifiedUser() &&
+        isValidAmbulance(incoming(), ambulanceId) &&
+        incoming().tenantId == existing().tenantId &&
+        incoming().isDemo == existing().isDemo &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          ((isDemoTenant(existing().tenantId) || isLiveStaff()) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'driverUid', 'driverName', 'lat', 'lng', 'gpsFreshnessAt', 'gpsConsentActive', 'updatedAt']))
+        );
+      allow delete: if isValidId(ambulanceId) && isAdmin();
+    }
+
+    // --- Follow-Ups ---
+    match /follow_ups/{followUpId} {
+      allow get: if isValidId(followUpId) && isVerifiedUser() && (
+        existing().patientUid == request.auth.uid ||
+        existing().workerUid == request.auth.uid ||
+        isAdmin() ||
+        isDemoTenant(existing().tenantId)
+      );
+      allow list: if isVerifiedUser() && (
+        resource.data.patientUid == request.auth.uid ||
+        resource.data.workerUid == request.auth.uid ||
+        isAdmin() ||
+        resource.data.tenantId == 'demo-maharashtra'
+      );
+      allow create: if isValidId(followUpId) && isVerifiedUser() &&
+        isValidFollowUp(incoming(), followUpId) &&
+        incoming().updatedAt == request.time &&
+        (incoming().patientUid == request.auth.uid || isDemoTenant(incoming().tenantId) || isLiveStaff() || isAdmin());
+      allow update: if isValidId(followUpId) && isVerifiedUser() &&
+        isValidFollowUp(incoming(), followUpId) &&
+        incoming().tenantId == existing().tenantId &&
+        incoming().patientUid == existing().patientUid &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'updatedAt']) &&
+        (existing().patientUid == request.auth.uid || isDemoTenant(existing().tenantId) || isLiveStaff() || isAdmin());
+      allow delete: if false;
+    }
+
+    // --- Append-Only Audit Logs ---
+    match /audit_logs/{auditId} {
+      allow get: if isValidId(auditId) && isVerifiedUser() && (isAdmin() || isDemoTenant(existing().tenantId));
+      allow list: if isVerifiedUser() && (isAdmin() || resource.data.tenantId == 'demo-maharashtra');
+      allow create: if isValidId(auditId) && isVerifiedUser() &&
+        isValidAuditLog(incoming(), auditId) &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+  }
+}

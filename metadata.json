@@ -1,0 +1,6 @@
+{
+  "name": "RAKSHA",
+  "description": "AI-powered public healthcare access, referral coordination, and emergency response platform for underserved and rural Maharashtra.",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
